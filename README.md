@@ -7,7 +7,7 @@ Most Large Language Model (LLM) serving systems use a First-Come-First-Serve (FC
 
 ## Installation
 
-vllm-ltr is built on [vLLM](https://github.com/vllm-project/vllm). To install our modified version, follow these steps:
+vllm-ltr is built on [vLLM](https://github.com/vllm-project/vllm) for inference and [allRank](https://github.com/allegro/allRank) for training. To install our modified version, follow these steps:
 
 ```
 conda create -n vllm-ltr python=3.10
