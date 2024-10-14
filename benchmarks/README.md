@@ -40,12 +40,14 @@ python benchmark_append_dataset_PO.py --dataset llama3-8b-sharegpt-test-t1-s0-81
 
 ## Download Pre-trained Models
 
-For model downloads, you can simply use:
+For predictor downloads, you can simply use:
 
 ```bash
 mkdir -p MODEL/results
 huggingface-cli download LLM-ltr/OPT-Predictors --local-dir MODEL/results
 ```
+
+or check the `vllm-ltr/train` directory for training predictors.
 
 ## Reproducing Results
 

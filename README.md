@@ -14,7 +14,9 @@ conda create -n vllm-ltr python=3.10
 conda activate vllm-ltr
 git clone https://github.com/hao-ai-lab/vllm-ltr.git
 cd vllm-ltr
-pip install -e .  
+conda install pytorch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 pytorch-cuda=12.1 -c pytorch -c nvidia #install pytorch according to your cuda version
+pip install -e . #install from source 
+pip install flash-attn torchaudio==2.2.1 torchvision==0.17.1 numpy==1.25.2 fschat accelerate gcsfs scikit-learn scipy matplotlib evaluate #extra libs
 ```
 
 ## Reproduce Results
