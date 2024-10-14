@@ -27,6 +27,7 @@ class ExecutorBase(ABC):
         lora_config: Optional[LoRAConfig],
         vision_language_config: Optional[VisionLanguageConfig],
         speculative_config: Optional[SpeculativeConfig],
+        is_aux_model: bool=False
     ) -> None:
         self.model_config = model_config
         self.cache_config = cache_config
@@ -38,7 +39,14 @@ class ExecutorBase(ABC):
         self.vision_language_config = vision_language_config
         self.speculative_config = speculative_config
 
-        self._init_executor()
+        if is_aux_model:
+            self._init_aux_executor()
+        else:
+            self._init_executor()
+
+    @abstractmethod
+    def _init_aux_executor(self) -> None:
+        pass
 
     @abstractmethod
     def _init_executor(self) -> None:

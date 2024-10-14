@@ -39,6 +39,8 @@ class Sampler(nn.Module):
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
+        pred_scores: Optional[torch.Tensor] = None,
+        aux_model_scores: Optional[torch.Tensor] = None,
     ) -> Optional[SamplerOutput]:
         assert logits is not None
         _, vocab_size = logits.shape
@@ -85,7 +87,7 @@ class Sampler(nn.Module):
         prompt_logprobs, sample_logprobs = _get_logprobs(
             logprobs, sampling_metadata, sample_results)
         return _build_sampler_output(sample_results, sampling_metadata,
-                                     prompt_logprobs, sample_logprobs)
+                                     prompt_logprobs, sample_logprobs, pred_scores, aux_model_scores)
 
 
 def _get_bin_counts_and_mask(
@@ -685,8 +687,11 @@ def _build_sampler_output(
     sampling_metadata: SamplingMetadata,
     prompt_logprobs: List[Optional[PromptLogprobs]],
     sample_logprobs: List[SampleLogprobs],
+    pred_scores: Optional[torch.Tensor] = None,
+    aux_model_scores: Optional[torch.Tensor] = None,
 ) -> SamplerOutput:
     sampler_output = []
+    pred_idx = 0
     for (seq_group, sample_result, group_prompt_logprobs,
          group_sample_logprobs) in zip(sampling_metadata.seq_groups,
                                        sample_results, prompt_logprobs,
@@ -700,5 +705,11 @@ def _build_sampler_output(
             seq_outputs.append(
                 SequenceOutput(seq_ids[parent_id], next_token_id, logprobs))
         sampler_output.append(
-            SequenceGroupOutput(seq_outputs, group_prompt_logprobs))
+            SequenceGroupOutput(seq_outputs, group_prompt_logprobs, pred_scores[pred_idx].item() if pred_scores is not None else None, aux_model_scores[pred_idx] if aux_model_scores is not None else None) )
+        pred_idx += 1
+    if pred_scores is not None:
+        assert len(pred_scores) == pred_idx
+    if aux_model_scores is not None:
+        assert len(aux_model_scores) == pred_idx 
+
     return SamplerOutput(outputs=sampler_output)

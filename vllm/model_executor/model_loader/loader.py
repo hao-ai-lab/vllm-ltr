@@ -23,7 +23,8 @@ from vllm.model_executor.model_loader.weight_utils import (
     get_quant_config, initialize_dummy_weights, np_cache_weights_iterator,
     pt_weights_iterator, safetensors_weights_iterator)
 from vllm.model_executor.models.llava import LlavaForConditionalGeneration
-
+from vllm.model_executor.predictor import predictor_model
+from vllm.model_executor.prefill_predictor import prefill_predictor_model
 if TYPE_CHECKING:
     from vllm.model_executor.layers.linear import LinearMethodBase
 
@@ -228,6 +229,17 @@ class DefaultModelLoader(BaseModelLoader):
                                                model,
                                                "fall_back_to_pt_during_load",
                                                True)), )
+
+
+        if model_config.predictor_model_config is not None:
+            with set_default_torch_dtype(model_config.dtype):
+                with torch.device(device_config.device):
+                    pred_config = model_config.predictor_model_config
+                    print("IMPORTING PREDICTOR MODEL ===============")
+                    predictor = predictor_model(pred_layer_idx=pred_config.model.pred_layer_idx, n_features=pred_config.model.n_features, fc_model=pred_config.model.fc_model, post_model=pred_config.model.post_model)
+                    predictor.load_state_dict(torch.load(pred_config.model.path))
+                    model.model.predictor = predictor
+            
         return model.eval()
 
 

@@ -49,6 +49,9 @@ class CacheEngine:
         self.gpu_cache = self._allocate_kv_cache(self.num_gpu_blocks, "cuda")
         self.cpu_cache = self._allocate_kv_cache(self.num_cpu_blocks, "cpu")
 
+        self.cache_stream = torch.cuda.Stream()
+        self.events = [torch.cuda.Event() for _ in range(self.num_layers)]
+
     def _allocate_kv_cache(
         self,
         num_blocks: int,
@@ -66,6 +69,25 @@ class CacheEngine:
                             pin_memory=pin_memory,
                             device=device))
         return kv_cache
+
+    def _swap_by_layer(
+        self,
+        src: List[torch.Tensor],
+        dst: List[torch.Tensor],
+        src_to_dst: Dict[int, int],
+        layer_index: int,
+    ) -> None:
+        with torch.cuda.stream(self.cache_stream):
+            src_key_cache, src_value_cache = src[layer_index]
+            dst_key_cache, dst_value_cache = dst[layer_index]
+            # Copy the key blocks.
+            self.attn_backend.swap_blocks(src_key_cache, dst_key_cache, src_to_dst)
+            # Copy the value blocks.
+            self.attn_backend.swap_blocks(src_value_cache, dst_value_cache,
+                                    src_to_dst)
+            event = self.events[layer_index]
+            event.record(stream=self.cache_stream)
+
 
     def swap_in(self, src_to_dst: Dict[int, int]) -> None:
         for i in range(self.num_layers):

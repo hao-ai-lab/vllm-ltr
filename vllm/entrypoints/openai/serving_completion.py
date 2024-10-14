@@ -239,6 +239,8 @@ class OpenAIServingCompletion(OpenAIServing):
                     previous_num_tokens[i] = len(output.token_ids)
                     finish_reason = output.finish_reason
                     stop_reason = output.stop_reason
+                    pred_score = output.pred_score
+                    aux_model_score = output.aux_model_score
                     if output.finish_reason is not None:  # return final usage
                         prompt_tokens = len(res.prompt_token_ids)
                         completion_tokens = len(output.token_ids)
@@ -260,6 +262,8 @@ class OpenAIServingCompletion(OpenAIServing):
                                 logprobs=logprobs,
                                 finish_reason=finish_reason,
                                 stop_reason=stop_reason,
+                                pred_score=pred_score,
+                                aux_model_score=aux_model_score
                             )
                         ],
                         usage=final_usage,
@@ -321,6 +325,8 @@ class OpenAIServingCompletion(OpenAIServing):
                     logprobs=logprobs,
                     finish_reason=output.finish_reason,
                     stop_reason=output.stop_reason,
+                    pred_score=output.pred_score,
+                    aux_model_score=output.aux_model_score,
                 )
                 choices.append(choice_data)
 

@@ -1,5 +1,5 @@
 import time
-from typing import List, Optional, Union
+from typing import List, Optional, Union, Dict
 
 from vllm.lora.request import LoRARequest
 from vllm.sequence import (PromptLogprobs, RequestMetrics, SampleLogprobs,
@@ -34,6 +34,9 @@ class CompletionOutput:
         finish_reason: Optional[str] = None,
         stop_reason: Union[int, str, None] = None,
         lora_request: Optional[LoRARequest] = None,
+        pred_score: Optional[float] = None,
+        aux_model_score: Optional[float] = None,
+        running_info: Optional[Dict] = None,
     ) -> None:
         self.index = index
         self.text = text
@@ -43,6 +46,10 @@ class CompletionOutput:
         self.finish_reason = finish_reason
         self.stop_reason = stop_reason
         self.lora_request = lora_request
+
+        self.pred_score = pred_score
+        self.aux_model_score = aux_model_score
+        self.running_info = running_info
 
     def finished(self) -> bool:
         return self.finish_reason is not None
@@ -90,6 +97,7 @@ class RequestOutput:
         self.finished = finished
         self.metrics = metrics
         self.lora_request = lora_request
+        self.latency = 0
 
     @classmethod
     def from_seq_group(cls, seq_group: SequenceGroup) -> "RequestOutput":
@@ -112,6 +120,9 @@ class RequestOutput:
         # always has the logprobs of the sampled tokens even if the
         # logprobs are not requested.
         include_logprobs = seq_group.sampling_params.logprobs is not None
+        pred_score = seq_group.pred_score
+        aux_model_score = seq_group.aux_model_score
+        running_info = seq_group.running_info
         text_buffer_length = seq_group.sampling_params.output_text_buffer_length
         outputs = [
             CompletionOutput(seqs.index(seq),
@@ -120,7 +131,7 @@ class RequestOutput:
                              seq.get_cumulative_logprob(),
                              seq.output_logprobs if include_logprobs else None,
                              SequenceStatus.get_finished_reason(seq.status),
-                             seq.stop_reason) for seq in top_n_seqs
+                             seq.stop_reason, None, pred_score, aux_model_score, running_info) for seq in top_n_seqs
         ]
 
         # Every sequence in the sequence group should have the same prompt.

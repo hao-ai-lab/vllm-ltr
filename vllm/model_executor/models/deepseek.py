@@ -344,16 +344,25 @@ class DeepseekModel(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
+        pred_scores = None
     ) -> torch.Tensor:
         hidden_states = self.embed_tokens(input_ids)
         residual = None
         for i in range(len(self.layers)):
             layer = self.layers[i]
+
+            if hasattr(self, 'predictor') and i == self.predictor.pred_layer_idx and attn_metadata.need_score:
+                #print("pred: ", attn_metadata, hidden_states.size())
+                assert hasattr(attn_metadata, "selected_token_indices")
+                inp_pred = (residual + hidden_states).view(-1, hidden_states.shape[-1])
+                inp_pred = inp_pred.index_select(0, attn_metadata.selected_token_indices)
+                pred_scores = self.predictor.score(inp_pred)
+
             hidden_states, residual = layer(positions, hidden_states,
                                             kv_caches[i], attn_metadata,
                                             residual)
         hidden_states, _ = self.norm(hidden_states, residual)
-        return hidden_states
+        return hidden_states, pred_scores
 
 
 class DeepseekForCausalLM(nn.Module):
@@ -378,9 +387,9 @@ class DeepseekForCausalLM(nn.Module):
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        hidden_states = self.model(input_ids, positions, kv_caches,
+        hidden_states, pred_scores = self.model(input_ids, positions, kv_caches,
                                    attn_metadata)
-        return hidden_states
+        return hidden_states, pred_scores
 
     def compute_logits(self, hidden_states: torch.Tensor,
                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
@@ -392,8 +401,9 @@ class DeepseekForCausalLM(nn.Module):
         self,
         logits: Optional[torch.Tensor],
         sampling_metadata: SamplingMetadata,
+        pred_scores
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(logits, sampling_metadata)
+        next_tokens = self.sampler(logits, sampling_metadata, pred_scores =pred_scores)
         return next_tokens
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):

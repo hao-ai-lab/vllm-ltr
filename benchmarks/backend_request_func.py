@@ -8,7 +8,7 @@ from typing import List, Optional
 
 import aiohttp
 from tqdm.asyncio import tqdm
-
+from json_loader import scan_loads
 AIOHTTP_TIMEOUT = aiohttp.ClientTimeout(total=6 * 60 * 60)
 
 
@@ -21,6 +21,9 @@ class RequestFuncInput:
     model: str
     best_of: int = 1
     use_beam_search: bool = False
+    est_tokens: int = -1
+    ignore_eos: bool = True
+
 
 
 @dataclass
@@ -33,6 +36,8 @@ class RequestFuncOutput:
         default_factory=list)  # List of inter-token latencies
     prompt_len: int = 0
     error: str = ""
+    pred_score: float = None
+    aux_model_score: float = None
 
 
 async def async_request_tgi(
@@ -98,6 +103,88 @@ async def async_request_tgi(
             pbar.update(1)
         return output
 
+
+async def async_request_vllm(
+    request_func_input: RequestFuncInput,
+    pbar: Optional[tqdm] = None,
+) -> RequestFuncOutput:
+    api_url = request_func_input.api_url
+    assert api_url.endswith(
+        "v1/completions"
+    ), "OpenAI Completions API URL must end with 'v1/completions'."
+
+    async with aiohttp.ClientSession(timeout=AIOHTTP_TIMEOUT) as session:
+        assert not request_func_input.use_beam_search
+        payload = {
+            "model": request_func_input.model,
+            "prompt": request_func_input.prompt,
+            "temperature": 1.0,
+            "best_of": request_func_input.best_of,
+            "max_tokens": request_func_input.output_len,
+            "stream": True,
+            "top_p": 1.0,
+            "ignore_eos": request_func_input.ignore_eos,
+            "est_tokens": request_func_input.est_tokens,
+        }
+        headers = {
+            "Authorization": f"Bearer {os.environ.get('OPENAI_API_KEY')}"
+        }
+
+        output = RequestFuncOutput()
+        output.prompt_len = request_func_input.prompt_len
+
+        generated_text = ""
+        ttft = 0.0
+        st = time.perf_counter()
+        most_recent_timestamp = st
+        try:
+            async with session.post(url=api_url, json=payload,
+                                    headers=headers) as response:
+                if response.status == 200:
+                    async for chunk_bytes in response.content:
+                        chunk_bytes = chunk_bytes.strip()
+                        if not chunk_bytes:
+                            continue
+
+                        chunk = remove_prefix(chunk_bytes.decode("utf-8"),
+                                              "data: ")
+                        if chunk == "[DONE]":
+                            latency = time.perf_counter() - st
+                        else:
+                            data = json.loads(chunk)
+
+                            if data["choices"][0]["text"]:
+                                timestamp = time.perf_counter()
+                                # First token
+                                if ttft == 0.0:
+                                    ttft = time.perf_counter() - st
+                                    output.ttft = ttft
+
+                                # Decoding phase
+                                # NOTE: Some completion API might have a last
+                                # usage summary response without a token so we
+                                # do not want to include as inter-token-latency
+                                elif data.get("usage", None) is None:
+                                    output.itl.append(timestamp -
+                                                      most_recent_timestamp)
+
+                                most_recent_timestamp = timestamp
+                                generated_text += data["choices"][0]["text"]
+                    
+                    output.pred_score = data["choices"][0]["pred_score"]
+                    output.aux_model_score = data["choices"][0]["aux_model_score"]
+                    #print(data, data.__class__, output.pred_score, output.aux_model_score)
+                    output.generated_text = generated_text
+                    output.success = True
+                    output.latency = latency
+        except Exception:
+            output.success = False
+            exc_info = sys.exc_info()
+            output.error = "".join(traceback.format_exception(*exc_info))
+
+    if pbar:
+        pbar.update(1)
+    return output
 
 async def async_request_trt_llm(
     request_func_input: RequestFuncInput,
@@ -380,7 +467,7 @@ def remove_prefix(text: str, prefix: str) -> str:
 
 ASYNC_REQUEST_FUNCS = {
     "tgi": async_request_tgi,
-    "vllm": async_request_openai_completions,
+    "vllm": async_request_vllm,
     "lmdeploy": async_request_openai_completions,
     "deepspeed-mii": async_request_deepspeed_mii,
     "openai": async_request_openai_completions,

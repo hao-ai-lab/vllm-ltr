@@ -144,6 +144,7 @@ class Worker(WorkerBase):
         # NOTE(woosuk): Here we assume that the other processes using the same
         # GPU did not change their memory usage during the profiling.
         peak_memory = self.init_gpu_memory - free_gpu_memory
+                
         assert peak_memory > 0, (
             "Error in memory profiling. This happens when the GPU memory was "
             "not properly cleaned up before initializing the vLLM instance.")
@@ -163,12 +164,13 @@ class Worker(WorkerBase):
         return num_gpu_blocks, num_cpu_blocks
 
     def initialize_cache(self, num_gpu_blocks: int,
-                         num_cpu_blocks: int) -> None:
+                         num_cpu_blocks: int, allow_illegal: bool=False) -> None:
         """Allocate GPU and CPU KV cache with the specified number of blocks.
 
         This also warms up the model, which may record CUDA graphs.
         """
-        raise_if_cache_size_invalid(num_gpu_blocks,
+        if not allow_illegal:
+            raise_if_cache_size_invalid(num_gpu_blocks,
                                     self.cache_config.block_size,
                                     self.model_config.max_model_len)
 
@@ -200,10 +202,10 @@ class Worker(WorkerBase):
     ) -> None:
         # Issue cache operations.
         # TODO(woosuk): Profile swapping overhead and optimize if needed.
-        if blocks_to_swap_in:
-            self.cache_engine.swap_in(blocks_to_swap_in)
         if blocks_to_swap_out:
             self.cache_engine.swap_out(blocks_to_swap_out)
+        if blocks_to_swap_in:
+            self.cache_engine.swap_in(blocks_to_swap_in)
         if blocks_to_copy:
             self.cache_engine.copy(blocks_to_copy)
 

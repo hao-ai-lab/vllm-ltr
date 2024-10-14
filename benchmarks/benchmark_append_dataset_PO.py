@@ -6,57 +6,46 @@ import time
 from typing import List, Optional, Tuple
 
 import torch
-from tqdm import tqdm
 from transformers import (AutoModelForCausalLM, AutoTokenizer,
                           PreTrainedTokenizerBase)
-
+import datasets
+from tqdm import tqdm
+import scipy
 from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 
-
 def sample_requests(
+    model: str,
     dataset_path: str,
     num_requests: int,
     tokenizer: PreTrainedTokenizerBase,
     fixed_output_len: Optional[int],
+    shuffle_dataset: bool,
 ) -> List[Tuple[str, int, int]]:
     if fixed_output_len is not None and fixed_output_len < 4:
         raise ValueError("output_len too small")
+    dataset = []
+    with open(dataset_path, 'r', encoding="utf-8") as f:
+        for line in f:
+            data = json.loads(line)
+            dataset.append(data)
 
-    # Load the dataset.
-    with open(dataset_path) as f:
-        dataset = json.load(f)
-    # Filter out the conversations with less than 2 turns.
-    dataset = [data for data in dataset if len(data["conversations"]) >= 2]
-    # Only keep the first two turns of each conversation.
-    dataset = [(data["conversations"][0]["value"],
-                data["conversations"][1]["value"]) for data in dataset]
 
-    # Shuffle the dataset.
-    random.shuffle(dataset)
+    new_dataset = []
 
-    # Filter out sequences that are too long or too short
-    filtered_dataset: List[Tuple[str, int, int]] = []
+    PO_prompt = "\nBefore responding to the above instruction, you have to predict the length of your response. Print the estimated number of words in your response in the first line. Then change to a new line to respond to the instruction."
+    
     for i in range(len(dataset)):
-        if len(filtered_dataset) == num_requests:
-            break
+        data = dataset[i]
+        if "llama-3" in model.lower():
+            prompt = data["prompt"]
+            idx = prompt.rfind('<|eot_id|>')
+            new_prompt = prompt[:idx] + PO_prompt + prompt[idx:]
+            new_dataset.append((data["prompt"], data["generated"], new_prompt) )
+        else:
+            assert False, "model not supported"
 
-        # Tokenize the prompts and completions.
-        prompt = dataset[i][0]
-        prompt_token_ids = tokenizer(prompt).input_ids
-        completion = dataset[i][1]
-        completion_token_ids = tokenizer(completion).input_ids
-        prompt_len = len(prompt_token_ids)
-        output_len = len(completion_token_ids
-                         ) if fixed_output_len is None else fixed_output_len
-        if prompt_len < 4 or output_len < 4:
-            # Prune too short sequences.
-            continue
-        if prompt_len > 1024 or prompt_len + output_len > 2048:
-            # Prune too long sequences.
-            continue
-        filtered_dataset.append((prompt, prompt_len, output_len))
+    return new_dataset
 
-    return filtered_dataset
 
 
 def run_vllm(
@@ -73,13 +62,17 @@ def run_vllm(
     max_model_len: Optional[int],
     enforce_eager: bool,
     kv_cache_dtype: str,
-    quantization_param_path: Optional[str],
+    temperature: float,
+    schedule_type: str,
+    approx_portion: float,
     device: str,
+    quantization_param_path: Optional[str],
     enable_prefix_caching: bool,
     enable_chunked_prefill: bool,
     max_num_batched_tokens: int,
     gpu_memory_utilization: float = 0.9,
     download_dir: Optional[str] = None,
+
 ) -> float:
     from vllm import LLM, SamplingParams
     llm = LLM(
@@ -94,6 +87,7 @@ def run_vllm(
         gpu_memory_utilization=gpu_memory_utilization,
         enforce_eager=enforce_eager,
         kv_cache_dtype=kv_cache_dtype,
+        schedule_type=schedule_type,
         quantization_param_path=quantization_param_path,
         device=device,
         enable_prefix_caching=enable_prefix_caching,
@@ -101,29 +95,30 @@ def run_vllm(
         enable_chunked_prefill=enable_chunked_prefill,
         max_num_batched_tokens=max_num_batched_tokens,
     )
-
+            
     # Add the requests to the engine.
-    for prompt, _, output_len in requests:
+    for _, _, prompt_PO in requests:
         sampling_params = SamplingParams(
             n=n,
-            temperature=0.0 if use_beam_search else 1.0,
+            temperature=1.0,
             top_p=1.0,
-            use_beam_search=use_beam_search,
-            ignore_eos=True,
-            max_tokens=output_len,
+            use_beam_search=False,
+            ignore_eos=False,
+            max_tokens=100,
+            est_tokens=None,
         )
         # FIXME(woosuk): Do not use internal method.
         llm._add_request(
-            prompt=prompt,
+            prompt=prompt_PO,
             prompt_token_ids=None,
             sampling_params=sampling_params,
         )
 
     start = time.perf_counter()
     # FIXME(woosuk): Do not use internal method.
-    llm._run_engine(use_tqdm=True)
+    requests = llm._run_engine(use_tqdm=True)
     end = time.perf_counter()
-    return end - start
+    return end - start, requests
 
 
 def run_hf(
@@ -217,19 +212,19 @@ def main(args: argparse.Namespace):
         requests = [(prompt, args.input_len, args.output_len)
                     for _ in range(args.num_prompts)]
     else:
-        requests = sample_requests(args.dataset, args.num_prompts, tokenizer,
-                                   args.output_len)
+        requests = sample_requests(args.model, args.dataset, args.num_prompts, tokenizer,
+                                   args.output_len, args.shuffle_dataset)
 
     if args.backend == "vllm":
-        elapsed_time = run_vllm(
-            requests, args.model, args.tokenizer, args.quantization,
-            args.tensor_parallel_size, args.seed, args.n, args.use_beam_search,
-            args.trust_remote_code, args.dtype, args.max_model_len,
-            args.enforce_eager, args.kv_cache_dtype,
-            args.quantization_param_path, args.device,
-            args.enable_prefix_caching, args.enable_chunked_prefill,
+        elapsed_time, ret_requests = run_vllm(requests, args.model, args.tokenizer,
+                                args.quantization, args.tensor_parallel_size,
+                                args.seed, args.n, args.use_beam_search,
+                                args.trust_remote_code, args.dtype,
+                                args.max_model_len, args.enforce_eager,
+                                args.kv_cache_dtype, args.temperature, args.schedule_type, args.approx_param, args.device, args.quantization_param_path, args.enable_prefix_caching, args.enable_chunked_prefill,
             args.max_num_batched_tokens, args.gpu_memory_utilization,
             args.download_dir)
+
     elif args.backend == "hf":
         assert args.tensor_parallel_size == 1
         elapsed_time = run_hf(requests, args.model, tokenizer, args.n,
@@ -240,10 +235,44 @@ def main(args: argparse.Namespace):
                                args.output_len)
     else:
         raise ValueError(f"Unknown backend: {args.backend}")
-    total_num_tokens = sum(prompt_len + output_len
-                           for _, prompt_len, output_len in requests)
-    print(f"Throughput: {len(requests) / elapsed_time:.2f} requests/s, "
-          f"{total_num_tokens / elapsed_time:.2f} tokens/s")
+
+    
+    print("Sample Output", ret_requests[0])
+    save_file_name = f"PO-gen-{args.dataset}"
+
+    def extract_po(text):
+        est = ""
+        start = False
+        for i in text:
+            if start:
+                if i >= '0' and i <= '9':
+                    est += i 
+                else:
+                    break 
+            elif i >= '0' and i <= '9':
+                est += i 
+                start = True 
+            else:
+                continue
+        if len(est) > 0:
+            return int(est)
+        return 0
+
+    with open(save_file_name, "w") as outfile:
+        for req in requests:
+            prompt = req[0]
+            generated = req[1]
+            po_in = req[2]
+            PO = None
+            cont = None
+            for reqx in ret_requests:
+                if reqx.prompt == po_in:
+                    PO = extract_po(reqx.outputs[0].text)
+                    cont = reqx.outputs[0].text
+                    break
+            assert PO is not None
+            result_json = {"prompt":prompt, "generated": generated, "PO": PO, "PO-out": cont, "PO-in": req[2]}
+            outfile.write(json.dumps(result_json) + "\n")
 
 
 if __name__ == "__main__":
@@ -262,7 +291,7 @@ if __name__ == "__main__":
                         help="Input prompt length for each request")
     parser.add_argument("--output-len",
                         type=int,
-                        default=None,
+                        default=1024,
                         help="Output length for each request. Overrides the "
                         "output length from the dataset.")
     parser.add_argument("--model", type=str, default="facebook/opt-125m")
@@ -282,6 +311,13 @@ if __name__ == "__main__":
                         default=1000,
                         help="Number of prompts to process.")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--start", type=int, default=0)
+    parser.add_argument("--temperature", type=float, default=0.0)
+    parser.add_argument("--schedule-type", type=str, default="fcfs",
+                        choices=["fcfs","fcfs-origin", "sjf", "ljf", "approx-sjf", "approx-ljf"])
+    parser.add_argument("--dir", type=str, default="THROUGHPUT")
+    parser.add_argument("--approx-param", type=float, default=0)
+    parser.add_argument("--shuffle-dataset", action="store_true")
     parser.add_argument("--hf-max-batch-size",
                         type=int,
                         default=None,

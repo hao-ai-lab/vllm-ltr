@@ -236,6 +236,7 @@ class OPTDecoder(nn.Module):
         positions: torch.Tensor,
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
+        pred_scores = None
     ) -> torch.Tensor:
         inputs_embeds = self.embed_tokens(input_ids)
         pos_embeds = self.embed_positions(positions)
@@ -245,13 +246,21 @@ class OPTDecoder(nn.Module):
 
         for i in range(len(self.layers)):
             layer = self.layers[i]
-            hidden_states = layer(hidden_states, kv_caches[i], attn_metadata)
+            
+            if hasattr(self, 'predictor') and i == self.predictor.pred_layer_idx and attn_metadata.need_score:
+                #print("pred: ", attn_metadata, hidden_states.size())
+                assert hasattr(attn_metadata, "selected_token_indices")
+                inp_pred = (residual + hidden_states).view(-1, hidden_states.shape[-1])
+                inp_pred = inp_pred.index_select(0, attn_metadata.selected_token_indices)
+                pred_scores = self.predictor.score(inp_pred)
+
+            hidden_states = layer(hidden_states, kv_caches[i] if kv_caches[i] is None or kv_caches[i].numel() > 0 else None, attn_metadata)
 
         if self.final_layer_norm is not None:
             hidden_states = self.final_layer_norm(hidden_states)
         if self.project_out is not None:
             hidden_states, _ = self.project_out(hidden_states)
-        return hidden_states
+        return hidden_states, pred_scores
 
 
 class OPTModel(nn.Module):
@@ -296,9 +305,9 @@ class OPTForCausalLM(nn.Module):
         kv_caches: List[torch.Tensor],
         attn_metadata: AttentionMetadata,
     ) -> torch.Tensor:
-        hidden_states = self.model(input_ids, positions, kv_caches,
+        hidden_states, pred_scores = self.model(input_ids, positions, kv_caches,
                                    attn_metadata)
-        return hidden_states
+        return hidden_states, pred_scores
 
     def compute_logits(self, hidden_states: torch.Tensor,
                        sampling_metadata: SamplingMetadata) -> torch.Tensor:
@@ -310,8 +319,9 @@ class OPTForCausalLM(nn.Module):
         self,
         logits: torch.Tensor,
         sampling_metadata: SamplingMetadata,
+        pred_scores
     ) -> Optional[SamplerOutput]:
-        next_tokens = self.sampler(logits, sampling_metadata)
+        next_tokens = self.sampler(logits, sampling_metadata, pred_scores =pred_scores)
         return next_tokens
 
     def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
@@ -323,6 +333,91 @@ class OPTForCausalLM(nn.Module):
         ]
         params_dict = dict(self.named_parameters(remove_duplicate=False))
         for name, loaded_weight in weights:
+            if "lm_head.weight" in name:
+                continue
+            if name.startswith("decoder."):
+                name = "model." + name
+
+            for (param_name, weight_name, shard_id) in stacked_params_mapping:
+                if weight_name not in name:
+                    continue
+                name = name.replace(weight_name, param_name)
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+                param = params_dict[name]
+                weight_loader = param.weight_loader
+                weight_loader(param, loaded_weight, shard_id)
+                break
+            else:
+                # Skip loading extra bias for GPTQ models.
+                if name.endswith(".bias") and name not in params_dict:
+                    continue
+                param = params_dict[name]
+                weight_loader = getattr(param, "weight_loader",
+                                        default_weight_loader)
+                weight_loader(param, loaded_weight)
+
+
+class OPTForSequenceClassification(nn.Module):
+
+    def __init__(
+        self,
+        config,
+        linear_method: Optional[LinearMethodBase] = None,
+    ):
+        super().__init__()
+        self.config = config
+        self.linear_method = linear_method
+        self.model = OPTModel(config, linear_method)
+        self.num_labels = config.num_labels
+        self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False)
+        self.logits_processor = LogitsProcessor(config.vocab_size)
+        self.sampler = Sampler()
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        positions: torch.Tensor,
+        kv_caches: List[torch.Tensor],
+        attn_metadata: AttentionMetadata,
+    ) -> torch.Tensor:
+        hidden_states, pred_scores = self.model(input_ids, positions, kv_caches,
+                                   attn_metadata)
+        return hidden_states, pred_scores
+
+    def compute_logits(self, hidden_states: torch.Tensor,
+                       sampling_metadata: SamplingMetadata) -> torch.Tensor:
+        #print('logits size ', self.score.weight.size(), hidden_states.size())
+        logits = self.logits_processor(self.score.weight, hidden_states,
+                                       sampling_metadata)
+        if self.num_labels > 1 and logits is not None:
+            logits = logits[:,:self.num_labels].argmax(dim=-1, keepdim=True).float()
+        #print('out logits: ', logits.size() if logits is not None else None)
+        return logits
+
+    def sample(
+        self,
+        logits: torch.Tensor,
+        sampling_metadata: SamplingMetadata,
+        pred_scores
+    ) -> Optional[SamplerOutput]:
+        #print('enter logits: ', logits.size())
+        assert logits.dim() == 2 #and logits.size(1) == 1, f" logits: {logits.size()}"
+        #print(logits[:,0].tolist())
+        next_tokens = self.sampler(logits, sampling_metadata, pred_scores =pred_scores, aux_model_scores=logits[:,0].tolist())
+        return next_tokens
+
+    def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):
+        stacked_params_mapping = [
+            # (param_name, shard_name, shard_id)
+            ("qkv_proj", "q_proj", "q"),
+            ("qkv_proj", "k_proj", "k"),
+            ("qkv_proj", "v_proj", "v"),
+        ]
+        params_dict = dict(self.named_parameters(remove_duplicate=False))
+        for name, loaded_weight in weights:
+
             if "lm_head.weight" in name:
                 continue
             if name.startswith("decoder."):

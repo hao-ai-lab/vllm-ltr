@@ -1,10 +1,9 @@
-import argparse
-from itertools import accumulate
 from typing import Optional
 
-import nvtx
+import argparse
 import torch
-
+import nvtx
+from itertools import accumulate
 from vllm.model_executor.layers.rotary_embedding import get_rope
 
 

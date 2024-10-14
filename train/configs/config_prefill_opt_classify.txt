@@ -1,0 +1,11 @@
+{
+  "model": {
+    "pred_model": "facebook/opt-125m",
+    "num_labels": -1,
+    "mtype": "class",
+    "activation" : null,
+    "max_length": 2048,
+    "max_batch_size" : 1000
+  }
+}
+

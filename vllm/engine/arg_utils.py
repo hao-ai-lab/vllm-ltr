@@ -72,6 +72,12 @@ class EngineArgs:
     # Speculative decoding configuration.
     speculative_model: Optional[str] = None
     num_speculative_tokens: Optional[int] = None
+    schedule_type: str = 'fcfs'
+    enable_starvation_prevent: bool = False
+    predictor_model_config: str = ''
+    prefill_predictor_model_config: str = ''
+    placement_group: Optional[str] = None
+    llm_model_executor: Optional[str] = None 
 
     def __post_init__(self):
         if self.tokenizer is None:
@@ -211,6 +217,14 @@ class EngineArgs:
                             type=int,
                             default=EngineArgs.tensor_parallel_size,
                             help='number of tensor parallel replicas')
+        parser.add_argument('--placement-group',
+                            type=str,
+                            default=None,
+                            help='Never Set This')
+        parser.add_argument('--llm-model-executor',
+                            type=str,
+                            default=None,
+                            help='Never Set This')
         parser.add_argument(
             '--max-parallel-loading-workers',
             type=int,
@@ -329,6 +343,20 @@ class EngineArgs:
                             'This should be a JSON string that will be '
                             'parsed into a dictionary. Ignored if '
                             'tokenizer_pool_size is 0.')
+        parser.add_argument('--schedule-type',
+                            type=str,
+                            default="fcfs",
+                            help='schedule type')
+        parser.add_argument('--predictor-model-config',
+                            type=str,
+                            default="",
+                            help='predictor model config')
+        parser.add_argument('--prefill-predictor-model-config',
+                            type=str,
+                            default="",
+                            help='predictor model config')
+        parser.add_argument('--enable-starvation-prevent',
+                            action="store_true")
         # LoRA related configs
         parser.add_argument('--enable-lora',
                             action='store_true',
@@ -445,7 +473,7 @@ class EngineArgs:
             self.code_revision, self.tokenizer_revision, self.max_model_len,
             self.quantization, self.quantization_param_path,
             self.enforce_eager, self.max_context_len_to_capture,
-            self.max_logprobs)
+            self.max_logprobs, predictor_model_config=self.predictor_model_config, prefill_predictor_model_config=self.prefill_predictor_model_config)
         cache_config = CacheConfig(self.block_size,
                                    self.gpu_memory_utilization,
                                    self.swap_space, self.kv_cache_dtype,
@@ -460,7 +488,7 @@ class EngineArgs:
                 self.tokenizer_pool_size,
                 self.tokenizer_pool_type,
                 self.tokenizer_pool_extra_config,
-            ), self.ray_workers_use_nsight)
+            ), self.ray_workers_use_nsight, self.placement_group, self.llm_model_executor)
 
         speculative_config = SpeculativeConfig.maybe_create_spec_config(
             target_model_config=model_config,
@@ -480,6 +508,8 @@ class EngineArgs:
                                  speculative_config.num_lookahead_slots),
             delay_factor=self.scheduler_delay_factor,
             enable_chunked_prefill=self.enable_chunked_prefill,
+            schedule_type=self.schedule_type,
+            enable_starvation_prevent=self.enable_starvation_prevent
         )
         lora_config = LoRAConfig(
             max_lora_rank=self.max_lora_rank,

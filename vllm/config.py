@@ -13,6 +13,7 @@ from vllm.model_executor.layers.quantization import QUANTIZATION_METHODS
 from vllm.transformers_utils.config import get_config, get_hf_text_config
 from vllm.utils import (get_cpu_memory, get_nvcc_cuda_version, is_cpu, is_hip,
                         is_neuron)
+from vllm.config_predictor import PredictorConfig, PrefillPredictorConfig
 
 if TYPE_CHECKING:
     from ray.util.placement_group import PlacementGroup
@@ -85,6 +86,8 @@ class ModelConfig:
         enforce_eager: bool = False,
         max_context_len_to_capture: Optional[int] = None,
         max_logprobs: int = 5,
+        predictor_model_config: str = '',
+        prefill_predictor_model_config: str = '',
     ) -> None:
         self.model = model
         self.tokenizer = tokenizer
@@ -99,6 +102,8 @@ class ModelConfig:
         self.enforce_eager = enforce_eager
         self.max_context_len_to_capture = max_context_len_to_capture
         self.max_logprobs = max_logprobs
+        self.predictor_model_config = None if predictor_model_config == '' else PredictorConfig.from_json(predictor_model_config)
+        self.prefill_predictor_model_config = None if prefill_predictor_model_config == '' else PrefillPredictorConfig.from_json(prefill_predictor_model_config)
 
         self.hf_config = get_config(self.model, trust_remote_code, revision,
                                     code_revision)
@@ -499,6 +504,7 @@ class ParallelConfig:
         tokenizer_pool_config: Optional[TokenizerPoolConfig] = None,
         ray_workers_use_nsight: bool = False,
         placement_group: Optional["PlacementGroup"] = None,
+        llm_model_executor: Optional["llm_model_executor"] = None
     ) -> None:
         self.pipeline_parallel_size = pipeline_parallel_size
         self.tensor_parallel_size = tensor_parallel_size
@@ -508,6 +514,7 @@ class ParallelConfig:
         self.tokenizer_pool_config = tokenizer_pool_config
         self.ray_workers_use_nsight = ray_workers_use_nsight
         self.placement_group = placement_group
+        self.llm_model_executor = llm_model_executor
 
         self.world_size = pipeline_parallel_size * self.tensor_parallel_size
         if self.world_size > 1:
@@ -564,6 +571,8 @@ class SchedulerConfig:
         num_lookahead_slots: int = 0,
         delay_factor: float = 0.0,
         enable_chunked_prefill: bool = False,
+        schedule_type: str='fcfs',
+        enable_starvation_prevent: bool = False,
     ) -> None:
         if max_num_batched_tokens is not None:
             self.max_num_batched_tokens = max_num_batched_tokens
@@ -584,7 +593,10 @@ class SchedulerConfig:
         self.num_lookahead_slots = num_lookahead_slots
         self.delay_factor = delay_factor
         self.chunked_prefill_enabled = enable_chunked_prefill
-
+        self.schedule_type = schedule_type
+        self.enable_starvation_prevent = enable_starvation_prevent
+        self.fake_allocate = False 
+        
         self._verify_args()
 
     def _verify_args(self) -> None:

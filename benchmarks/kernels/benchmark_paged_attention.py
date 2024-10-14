@@ -1,12 +1,13 @@
+from typing import Optional
 import argparse
 import random
 import time
-from typing import Optional
 
 import torch
 
-from vllm import _custom_ops as ops
 from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE, create_kv_caches_with_random
+from vllm._C import ops
+from vllm.model_executor.layers.attention import flash_attn_with_kvcache_paged
 
 NUM_BLOCKS = 1024
 PARTITION_SIZE = 512
@@ -97,9 +98,6 @@ def main(
             torch.cuda.cudart().cudaProfilerStart()
         start_time = time.perf_counter()
 
-        # Using default kv_scale
-        kv_scale = 1.0
-
         for _ in range(num_iters):
             if version == "v1":
                 ops.paged_attention_v1(
@@ -115,7 +113,6 @@ def main(
                     max_context_len,
                     alibi_slopes,
                     kv_cache_dtype,
-                    kv_scale,
                 )
             elif version == "v2":
                 ops.paged_attention_v2(
@@ -134,7 +131,6 @@ def main(
                     max_context_len,
                     alibi_slopes,
                     kv_cache_dtype,
-                    kv_scale,
                 )
             else:
                 raise ValueError(f"Invalid version: {version}")
@@ -173,7 +169,10 @@ if __name__ == '__main__':
                         type=int,
                         choices=[64, 80, 96, 112, 128, 256],
                         default=128)
-    parser.add_argument("--block-size", type=int, choices=[16, 32], default=16)
+    parser.add_argument("--block-size",
+                        type=int,
+                        choices=[16, 32, 256],
+                        default=16)
     parser.add_argument("--use-alibi", action="store_true")
     parser.add_argument("--dtype",
                         type=str,
@@ -184,13 +183,11 @@ if __name__ == '__main__':
     parser.add_argument(
         "--kv-cache-dtype",
         type=str,
-        choices=["auto", "fp8"],
+        choices=["auto", "fp8_e5m2"],
         default="auto",
         help=
-        'Data type for kv cache storage. If "auto", will use model data type. '
-        'FP8_E5M2 (without scaling) is only supported on cuda version greater '
-        'than 11.8. On ROCm (AMD GPU), FP8_E4M3 is instead supported for '
-        'common inference criteria.')
+        'Data type for kv cache storage. If "auto", will use model data type.')
+    parser.add_argument("--device", type=str, choices=["cuda"], default="cuda")
     args = parser.parse_args()
     print(args)
 

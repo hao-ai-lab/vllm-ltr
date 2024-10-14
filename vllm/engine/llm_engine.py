@@ -194,7 +194,11 @@ class LLMEngine:
         # Create the scheduler.
         # NOTE: the cache_config here have been updated with the numbers of
         # GPU and CPU blocks, which are profiled in the distributed executor.
-        self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
+        if scheduler_config.schedule_type.startswith("mlfq"):
+            from vllm.core.mlfq_scheduler import MLFQScheduler
+            self.scheduler = MLFQScheduler(scheduler_config, cache_config, lora_config)
+        else:
+            self.scheduler = Scheduler(scheduler_config, cache_config, lora_config)
 
         # Metric Logging.
         if self.log_stats:
@@ -217,6 +221,25 @@ class LLMEngine:
                     self.get_tokenizer_for_seq,
                 ),
             ))
+        print('Prefill Pred: ', self.model_config.prefill_predictor_model_config)
+        if self.model_config.prefill_predictor_model_config:
+            print('aux llm config: ', self.model_config.prefill_predictor_model_config, "len: ", self.model_config.prefill_predictor_model_config.model.max_length)
+            from vllm import AUXLLM
+            self.scheduler.aux_model = AUXLLM(
+                model=self.model_config.prefill_predictor_model_config.model.path,
+                tokenizer=self.model_config.prefill_predictor_model_config.model.pred_model,
+                swap_space=0,
+                gpu_memory_utilization=0.0,
+                enforce_eager=True,
+                schedule_type='fcfs',
+                enable_chunked_prefill=False,
+                max_model_len=self.model_config.prefill_predictor_model_config.model.max_length,
+                tensor_parallel_size=self.parallel_config.tensor_parallel_size,
+                placement_group=self.parallel_config.placement_group,
+                llm_model_executor=self.model_executor,
+            )
+        else:
+            self.scheduler.aux_model = None
 
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
@@ -405,7 +428,7 @@ class LLMEngine:
         # processing
         sampling_params.eos_token_id = seq.eos_token_id
         sampling_params.update_from_generation_config(
-            self.generation_config_fields)
+            self.generation_config_fields) #-> lead to bug when I set ignore_eos=True
 
         # Create the sequence group.
         seq_group = SequenceGroup(request_id, [seq], sampling_params,
@@ -465,6 +488,11 @@ class LLMEngine:
         for scheduled_seq_group, outputs in zip(scheduled_seq_groups,
                                                 output_by_sequence_group):
             seq_group = scheduled_seq_group.seq_group
+            
+            assert len(outputs) == 1
+            if outputs[0].pred_score is not None: 
+                seq_group.set_pred_score(outputs[0].pred_score)
+
             seq_group.update_num_computed_tokens(
                 scheduled_seq_group.token_chunk_size)
             # If uncomputed tokens > 0, it means prefill is chunked.

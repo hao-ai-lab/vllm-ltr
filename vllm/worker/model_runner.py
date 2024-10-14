@@ -158,6 +158,7 @@ class ModelRunner:
         self.graph_block_tables: torch.Tensor  # Set after initial profiling.
 
     def load_model(self) -> None:
+        #print('loading model', self.model_config)
         with CudaMemoryProfiler() as m:
             self.model = get_model(
                 model_config=self.model_config,
@@ -656,12 +657,15 @@ class ModelRunner:
         if self.is_driver_worker:
             prefill_reqs = []
             decode_reqs = []
+
+            need_score=False
             for seq_group_meta in seq_group_metadata_list:
                 if seq_group_meta.is_prompt:
                     prefill_reqs.append(seq_group_meta)
                 else:
                     decode_reqs.append(seq_group_meta)
-
+                if seq_group_meta.need_score:
+                    need_score = True
             # Prepare input tensors.
             (
                 input_tokens,
@@ -746,6 +750,7 @@ class ModelRunner:
                 "slot_mapping": slot_mapping,
                 "num_prefills": num_prefills,
                 "batch_type": batch_type,
+                "need_score": need_score,
             }
             if prefill_attn_metadata is not None:
                 metadata_dict.update(prefill_attn_metadata.asdict_zerocopy())
@@ -775,6 +780,7 @@ class ModelRunner:
             num_prefill_tokens = metadata_dict.pop("num_prefill_tokens")
             num_decode_tokens = metadata_dict.pop("num_decode_tokens")
             batch_type = metadata_dict.pop("batch_type")
+            need_score = metadata_dict.pop("need_score")
 
             # Create an attention metadata.
             prefill_attn_metadata = None
@@ -810,6 +816,8 @@ class ModelRunner:
             prefill_metadata=prefill_attn_metadata,
             decode_metadata=decode_attn_metadata,
             kv_cache_dtype=self.kv_cache_dtype,
+            need_score=need_score,
+            selected_token_indices=sampling_metadata.selected_token_indices
         )
 
         return (input_tokens, input_positions, attn_metadata,
@@ -847,17 +855,24 @@ class ModelRunner:
             execute_model_kwargs.update({"image_input": multi_modal_input})
         hidden_states = model_executable(**execute_model_kwargs)
 
+        if type(hidden_states) == tuple and len(hidden_states) == 2:
+            hidden_states, pred_scores = hidden_states
+        else:
+            pred_scores = None
+            hidden_states = hidden_states
+
         # Compute the logits.
         logits = self.model.compute_logits(hidden_states, sampling_metadata)
 
         # Only perform sampling in the driver worker.
         if not sampling_metadata.perform_sampling:
             return None
-
+        #print('before sample')
         # Sample the next token.
         output = self.model.sample(
             logits=logits,
             sampling_metadata=sampling_metadata,
+            pred_scores=pred_scores
         )
         return output
 
@@ -918,6 +933,7 @@ class ModelRunner:
                 lora_request=dummy_lora_requests_per_seq[group_id]
                 if dummy_lora_requests_per_seq else None,
                 multi_modal_data=fake_multi_modal_input,
+                need_score=True
             )
             seqs.append(seq)
 
@@ -1031,6 +1047,8 @@ class ModelRunner:
                     prefill_metadata=None,
                     decode_metadata=decode_metadata,
                     kv_cache_dtype=self.kv_cache_dtype,
+                    need_score=False,
+                    selected_token_indices=None
                 )
 
                 if self.lora_config:

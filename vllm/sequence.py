@@ -423,6 +423,15 @@ class SequenceGroup:
         self.state = SequenceGroupState()
         self.multi_modal_data = multi_modal_data
 
+        self.type = ""
+        self.pred_score = None
+        self.pscore = None
+        self.aux_model_score = None
+        self.priority = -1 #not initialized priority
+        self.lst_process_time = arrival_time
+        self.running_info = {"swap_out" : 0, "swap_blocks" : 0}
+        self.process_time = 0
+
     @property
     def prompt(self) -> str:
         # All sequences in the group should have the same prompt.
@@ -438,6 +447,25 @@ class SequenceGroup:
     @property
     def lora_int_id(self) -> int:
         return self.lora_request.lora_int_id if self.lora_request else 0
+
+    def count_swap_out(self) -> None:
+        self.running_info['swap_out'] = self.running_info['swap_out'] + 1
+        self.running_info['swap_blocks'] = self.running_info['swap_blocks'] + len(self.seqs_dict[next(iter(self.seqs_dict))].logical_token_blocks)
+
+    def get_priority(self) -> int:
+        return self.priority
+
+    def set_priority(self, priority: int) -> None:
+        self.priority = priority
+    
+    def need_aux_model_score(self) -> bool:
+        return self.aux_model_score is None 
+    
+    def set_aux_model_score(self, aux_model_score) -> None:
+        self.aux_model_score = aux_model_score
+
+    def set_pred_score(self, pred_score):
+        self.pred_score = pred_score
 
     def get_last_latency(self, now: float) -> float:
         """Gets last token latency for Request level timings."""
@@ -573,6 +601,7 @@ class SequenceGroupMetadata:
         computed_block_nums: Optional[List[int]] = None,
         state: Optional[SequenceGroupState] = None,
         multi_modal_data: Optional[MultiModalData] = None,
+        need_score: bool=False
     ) -> None:
         self.request_id = request_id
         self.is_prompt = is_prompt
@@ -583,6 +612,7 @@ class SequenceGroupMetadata:
         self.computed_block_nums = computed_block_nums
         self.multi_modal_data = multi_modal_data
         self.state = SequenceGroupState() if state is None else state
+        self.need_score = need_score
         self._token_chunk_size = token_chunk_size
 
         if self._token_chunk_size is None:
@@ -643,19 +673,27 @@ class SequenceGroupOutput:
         self,
         samples: List[SequenceOutput],
         prompt_logprobs: Optional[PromptLogprobs],
+        pred_score: Optional[float] = None,
+        aux_model_score: Optional[float] = None,
     ) -> None:
         self.samples = samples
         self.prompt_logprobs = prompt_logprobs
+        self.pred_score = pred_score
+        self.aux_model_score = aux_model_score
 
     def __repr__(self) -> str:
         return (f"SequenceGroupOutput(samples={self.samples}, "
-                f"prompt_logprobs={self.prompt_logprobs})")
+                f"prompt_logprobs={self.prompt_logprobs}, "
+                f"aux_model_score={self.aux_model_score}, "
+                f"pred_score={self.pred_score})")
 
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, SequenceGroupOutput):
             raise NotImplementedError()
         return (self.samples == other.samples
-                and self.prompt_logprobs == other.prompt_logprobs)
+                and self.prompt_logprobs == other.prompt_logprobs 
+                   and self.pred_score == other.pred_score
+                      and self.aux_model_score == other.aux_model_score)
 
 
 @dataclass

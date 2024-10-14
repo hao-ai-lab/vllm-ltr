@@ -107,6 +107,7 @@ class WorkerWrapperBase:
         self.worker_module_name = worker_module_name
         self.worker_class_name = worker_class_name
         self.worker = None
+        self.aux_worker = None
 
     def update_environment_variables(self, envs: Dict[str, str]) -> None:
         key = 'CUDA_VISIBLE_DEVICES'
@@ -115,6 +116,17 @@ class WorkerWrapperBase:
             # suppress the warning in `update_environment_variables`
             del os.environ[key]
         update_environment_variables(envs)
+
+    def init_aux_worker(self, *args, **kwargs):
+        """
+        Actual initialization of the worker class, and set up
+       function tracing if required.
+        Arguments are passed to the worker class constructor.
+        """
+
+        mod = importlib.import_module(self.worker_module_name)
+        worker_class = getattr(mod, self.worker_class_name)
+        self.aux_worker = worker_class(*args, **kwargs)
 
     def init_worker(self, *args, **kwargs):
         """
@@ -135,6 +147,23 @@ class WorkerWrapperBase:
         mod = importlib.import_module(self.worker_module_name)
         worker_class = getattr(mod, self.worker_class_name)
         self.worker = worker_class(*args, **kwargs)
+
+    def execute_aux_method(self, method, *args, **kwargs):
+        try:
+            if hasattr(self, method):
+                executor = getattr(self, method)
+            else:
+                executor = getattr(self.aux_worker, method)
+            return executor(*args, **kwargs)
+        except Exception as e:
+            # if the driver worker also execute methods,
+            # exceptions in the rest worker may cause deadlock in rpc like ray
+            # see https://github.com/vllm-project/vllm/issues/3455
+            # print the error and inform the user to solve the error
+            msg = (f"Error executing method {method}. "
+                   "This might cause deadlock in distributed execution.")
+            logger.exception(msg)
+            raise e
 
     def execute_method(self, method, *args, **kwargs):
         try:

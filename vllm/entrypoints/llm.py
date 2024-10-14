@@ -13,6 +13,7 @@ from vllm.sequence import MultiModalData
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Counter
 
+import time
 
 class LLM:
     """An LLM for generating texts from given prompts and sampling parameters.
@@ -87,6 +88,10 @@ class LLM:
         enforce_eager: bool = False,
         max_context_len_to_capture: int = 8192,
         disable_custom_all_reduce: bool = False,
+        schedule_type: str = "fcfs",
+        enable_starvation_prevent: bool = False,
+        predictor_model_config: str = '',
+        prefill_predictor_model_config: str = '',
         **kwargs,
     ) -> None:
         if "disable_log_stats" not in kwargs:
@@ -107,6 +112,10 @@ class LLM:
             enforce_eager=enforce_eager,
             max_context_len_to_capture=max_context_len_to_capture,
             disable_custom_all_reduce=disable_custom_all_reduce,
+            schedule_type=schedule_type,
+            enable_starvation_prevent=enable_starvation_prevent,
+            predictor_model_config=predictor_model_config,
+            prefill_predictor_model_config=prefill_predictor_model_config,
             **kwargs,
         )
         self.llm_engine = LLMEngine.from_engine_args(
@@ -216,12 +225,16 @@ class LLM:
             pbar = tqdm(total=num_requests,
                         desc="Processed prompts",
                         dynamic_ncols=True)
+        start = time.perf_counter()
+        self.llm_engine.scheduler.start_time = time.time()
         # Run the engine.
         outputs: List[RequestOutput] = []
         while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
             for output in step_outputs:
                 if output.finished:
+                    output.latency = time.perf_counter() - start
+                    output.HOL = output.metrics.time_in_queue
                     outputs.append(output)
                     if use_tqdm:
                         pbar.update(1)

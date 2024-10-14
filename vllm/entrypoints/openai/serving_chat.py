@@ -53,7 +53,7 @@ class OpenAIServingChat(OpenAIServing):
 
         try:
             prompt = self.tokenizer.apply_chat_template(
-                conversation=request.messages,
+                conversation=request.normalized_messages,
                 tokenize=False,
                 add_generation_prompt=request.add_generation_prompt)
         except Exception as e:
@@ -102,7 +102,7 @@ class OpenAIServingChat(OpenAIServing):
         if request.add_generation_prompt:
             return self.response_role
         else:
-            return request.messages[-1]["role"]
+            return request.normalized_messages[-1]["role"]
 
     async def chat_completion_stream_generator(
             self, request: ChatCompletionRequest,
@@ -147,12 +147,13 @@ class OpenAIServingChat(OpenAIServing):
                     # last message
                     if request.echo:
                         last_msg_content = ""
-                        if request.messages and isinstance(
-                                request.messages,
-                                list) and request.messages[-1].get(
-                                    "content") and request.messages[-1].get(
-                                        "role") == role:
-                            last_msg_content = request.messages[-1]["content"]
+                        if request.normalized_messages and isinstance(
+                                request.normalized_messages,
+                                list) and request.normalized_messages[-1].get(
+                                    "content") and request.normalized_messages[
+                                        -1].get("role") == role:
+                            last_msg_content = request.normalized_messages[-1][
+                                "content"]
 
                         if last_msg_content:
                             for i in range(request.n):
@@ -290,11 +291,12 @@ class OpenAIServingChat(OpenAIServing):
 
         if request.echo:
             last_msg_content = ""
-            if request.messages and isinstance(
-                    request.messages, list) and request.messages[-1].get(
-                        "content") and request.messages[-1].get(
+            if request.normalized_messages and isinstance(
+                    request.normalized_messages,
+                    list) and request.normalized_messages[-1].get(
+                        "content") and request.normalized_messages[-1].get(
                             "role") == role:
-                last_msg_content = request.messages[-1]["content"]
+                last_msg_content = request.normalized_messages[-1]["content"]
 
             for choice in choices:
                 full_message = last_msg_content + choice.message.content

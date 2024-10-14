@@ -265,6 +265,21 @@ class BlockSpaceManagerV1(BlockSpaceManager):
         else:
             return AllocStatus.LATER
 
+    def fake_allocate(self, seq_group: SequenceGroup) -> None:
+        seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
+
+        # Allocate new physical token blocks that will store the prompt tokens.
+        num_prompt_blocks = len(seq.logical_token_blocks)
+
+        block_table: BlockTable = []
+
+        for logical_idx in range(num_prompt_blocks):
+            block_table.append(-1)
+
+        # Assign the block table for each sequence.
+        for seq in seq_group.get_seqs(status=SequenceStatus.WAITING):
+            self.block_tables[seq.seq_id] = block_table.copy()
+
     def allocate(self, seq_group: SequenceGroup) -> None:
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
@@ -547,6 +562,12 @@ class BlockSpaceManagerV1(BlockSpaceManager):
     def get_block_table(self, seq: Sequence) -> List[int]:
         block_table = self.block_tables[seq.seq_id]
         return [block.block_number for block in block_table]
+
+    def get_fake_block_table_and_delete(self, seq: Sequence) -> List[int]:
+        block_table = self.block_tables[seq.seq_id]
+        ret = [-1 for block in block_table]
+        del self.block_tables[seq.seq_id]
+        return ret
 
     def get_num_free_gpu_blocks(self) -> int:
         return self.gpu_allocator.get_num_free_blocks()

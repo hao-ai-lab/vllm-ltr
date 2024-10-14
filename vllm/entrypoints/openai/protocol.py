@@ -4,7 +4,9 @@ import time
 from typing import Dict, List, Literal, Optional, Union
 
 import torch
-from pydantic import BaseModel, Field, conint, model_validator
+from annotated_types import Len
+from pydantic import BaseModel, Field, computed_field, model_validator, conint
+from typing_extensions import Annotated
 
 from vllm.sampling_params import SamplingParams
 from vllm.utils import random_uuid
@@ -59,10 +61,19 @@ class ResponseFormat(BaseModel):
     type: str = Literal["text", "json_object"]
 
 
+class TextContent(BaseModel):
+    type: Literal["text"]
+    text: str
+
+
+SingleTextContentList = Annotated[List[TextContent], Len(1, 1)]
+
+ChatCompletionMessage = Dict[str, Union[str, SingleTextContentList]]
+
 class ChatCompletionRequest(BaseModel):
     # Ordered by official OpenAI API documentation
     # https://platform.openai.com/docs/api-reference/chat/create
-    messages: List[Dict[str, str]]
+    messages: List[ChatCompletionMessage]
     model: str
     frequency_penalty: Optional[float] = 0.0
     logit_bias: Optional[Dict[str, float]] = None
@@ -88,6 +99,7 @@ class ChatCompletionRequest(BaseModel):
     length_penalty: Optional[float] = 1.0
     early_stopping: Optional[bool] = False
     ignore_eos: Optional[bool] = False
+    est_tokens: Optional[float] = None
     min_tokens: Optional[int] = 0
     stop_token_ids: Optional[List[int]] = Field(default_factory=list)
     skip_special_tokens: Optional[bool] = True
@@ -159,7 +171,7 @@ class ChatCompletionRequest(BaseModel):
                 return logits
 
             logits_processors = [logit_bias_logits_processor]
-
+        print('sample: ', self.est_tokens, self.ignore_eos)
         return SamplingParams(
             n=self.n,
             presence_penalty=self.presence_penalty,
@@ -178,6 +190,7 @@ class ChatCompletionRequest(BaseModel):
             best_of=self.best_of,
             top_k=self.top_k,
             ignore_eos=self.ignore_eos,
+            est_tokens=self.est_tokens,
             use_beam_search=self.use_beam_search,
             early_stopping=self.early_stopping,
             skip_special_tokens=self.skip_special_tokens,
@@ -187,13 +200,21 @@ class ChatCompletionRequest(BaseModel):
             logits_processors=logits_processors,
         )
 
+    @property
+    @computed_field
+    def normalized_messages(self) -> List[Dict[str, str]]:
+        return [{
+            key: value if isinstance(value, str) else value[0].text
+            for key, value in message.items()
+        } for message in self.messages]
+
     @model_validator(mode="before")
     @classmethod
     def check_guided_decoding_count(cls, data):
         guide_count = sum([
             "guided_json" in data and data["guided_json"] is not None,
             "guided_regex" in data and data["guided_regex"] is not None,
-            "guided_choice" in data and data["guided_choice"] is not None
+            "guided_choice" in data and data["guided_choice"] is not None,
         ])
         if guide_count > 1:
             raise ValueError(
@@ -232,6 +253,7 @@ class CompletionRequest(BaseModel):
     early_stopping: Optional[bool] = False
     stop_token_ids: Optional[List[int]] = Field(default_factory=list)
     ignore_eos: Optional[bool] = False
+    est_tokens: Optional[float] = None
     min_tokens: Optional[int] = 0
     skip_special_tokens: Optional[bool] = True
     spaces_between_special_tokens: Optional[bool] = True
@@ -296,7 +318,7 @@ class CompletionRequest(BaseModel):
                 return logits
 
             logits_processors = [logit_bias_logits_processor]
-
+        
         return SamplingParams(
             n=self.n,
             best_of=self.best_of,
@@ -311,6 +333,7 @@ class CompletionRequest(BaseModel):
             stop=self.stop,
             stop_token_ids=self.stop_token_ids,
             ignore_eos=self.ignore_eos,
+            est_tokens=self.est_tokens,
             max_tokens=self.max_tokens if not echo_without_generation else 1,
             min_tokens=self.min_tokens,
             logprobs=self.logprobs,
@@ -331,7 +354,7 @@ class CompletionRequest(BaseModel):
         guide_count = sum([
             "guided_json" in data and data["guided_json"] is not None,
             "guided_regex" in data and data["guided_regex"] is not None,
-            "guided_choice" in data and data["guided_choice"] is not None
+            "guided_choice" in data and data["guided_choice"] is not None,
         ])
         if guide_count > 1:
             raise ValueError(
@@ -359,6 +382,8 @@ class CompletionResponseChoice(BaseModel):
             "to stop, None if the completion finished for some other reason "
             "including encountering the EOS token"),
     )
+    pred_score: Optional[float] = None
+    aux_model_score: Optional[float] = None
 
 
 class CompletionResponse(BaseModel):
@@ -382,6 +407,8 @@ class CompletionResponseStreamChoice(BaseModel):
             "to stop, None if the completion finished for some other reason "
             "including encountering the EOS token"),
     )
+    pred_score: Optional[float] = None
+    aux_model_score: Optional[float] = None
 
 
 class CompletionStreamResponse(BaseModel):

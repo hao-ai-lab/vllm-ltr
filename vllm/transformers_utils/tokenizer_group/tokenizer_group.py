@@ -39,7 +39,10 @@ class TokenizerGroup(BaseTokenizerGroup):
                request_id: Optional[str] = None,
                lora_request: Optional[LoRARequest] = None) -> List[int]:
         tokenizer = self.get_lora_tokenizer(lora_request)
-        return tokenizer.encode(prompt)
+        ret = tokenizer.encode(prompt, add_special_tokens=True)
+        if "llama-3" in self.tokenizer_id.lower() and ret[0] != 128000:
+            ret = [128000] + ret
+        return ret 
 
     async def encode_async(
             self,

@@ -57,7 +57,10 @@ async def generate(request: Request) -> Response:
             text_outputs = [
                 prompt + output.text for output in request_output.outputs
             ]
-            ret = {"text": text_outputs}
+            score_outputs = [
+                output.pred_score for output in request_output.outputs
+            ]
+            ret = {"text": text_outputs, "pred_score": score_outputs}
             yield (json.dumps(ret) + "\0").encode("utf-8")
 
     if stream:
@@ -75,7 +78,9 @@ async def generate(request: Request) -> Response:
     assert final_output is not None
     prompt = final_output.prompt
     text_outputs = [prompt + output.text for output in final_output.outputs]
-    ret = {"text": text_outputs}
+    score_outputs = [ output.pred_score for output in final_output.outputs ]
+
+    ret = {"text": text_outputs, "pred_score": score_outputs}
     return JSONResponse(ret)
 
 
