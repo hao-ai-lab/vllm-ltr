@@ -21,7 +21,7 @@ pip install flash-attn torchaudio==2.2.1 torchvision==0.17.1 numpy==1.25.2 fscha
 
 ## Reproduce Results
 
-For predictor training, refer to the `./train` directory, and for end-to-end evaluation, check the `./benchmark` directory.
+For predictor training, refer to the `./train` directory, and for end-to-end evaluation, check the `./benchmarks` directory.
 
 Fine-tuned predictors can be found on [huggingface](https://huggingface.co/LLM-ltr/OPT-Predictors).
 
